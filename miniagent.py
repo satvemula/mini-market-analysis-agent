@@ -118,26 +118,26 @@ def summarize_news_with_gpt(headlines, ticker):
         return "No news to summarize."
 
     try:
+        # Construct the full prompt for the model
         prompt = f"Summarize these stock-related headlines about {ticker}: " + "\n".join(headlines)
         
-        # 💥 FIXED SYNTAX: Using 'chat.completions.create' with the standard 'gpt-3.5-turbo' model
+        # 💥 CRITICAL FIX: Use 'messages' list for the gpt-3.5-turbo model
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo", # Changed to the widely supported chat model
+            model="gpt-3.5-turbo", 
             messages=[
-                {"role": "system", "content": "You are a financial analyst summarizing stock news. Be concise."},
+                {"role": "system", "content": "You are a concise financial analyst summarizing news. Keep the summary under 100 words."},
                 {"role": "user", "content": prompt}
             ],
             max_tokens=150
         )
-        # 💥 FIXED ACCESS: Accessing the result via the 'message.content' path
+        
+        # Access the result using the correct path: choices[0].message.content
         return response.choices[0].message.content.strip() 
         
     except Exception as e:
         print("GPT summary error:", e)
-        # Check for authentication errors specifically
-        if "AuthenticationError" in str(e):
-             return "Unable to summarize news. Check OpenAI API Key on Render."
-        return "Unable to summarize news due to API call failure."
+        # The log confirms this is the failure point, but we keep the handler for safety
+        return "Unable to summarize news due to an internal API error. Check the Render logs for details."
 
 # === DASH LAYOUT ===
 server.layout = html.Div([
