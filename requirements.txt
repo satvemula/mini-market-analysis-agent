@@ -1,0 +1,7 @@
+dash
+pandas
+plotly
+requests
+openai>=1.0.0
+gunicorn
+python-dotenv
