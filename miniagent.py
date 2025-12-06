@@ -4,12 +4,20 @@ import requests
 import pandas as pd
 import plotly.graph_objects as go
 from openai import OpenAI
+import os
+from dotenv import load_dotenv
 
+# Load environment variables from a .env file locally
+# On Render, this is automatically handled by the Environment Variables section.
+load_dotenv() 
 
-# === API KEYS ===
-ALPHA_VANTAGE_KEY = 
-NEWSAPI_KEY = 
-OPENAI_API_KEY = 
+# === API KEYS & CLIENT INITIALIZATION ===
+ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_KEY")
+NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Initialize OpenAI Client
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 
 # === TICKER TO COMPANY NAME MAPPING ===
@@ -28,8 +36,9 @@ ticker_to_company = {
 
 tickers = list(ticker_to_company.keys())
 
-app = dash.Dash(__name__)
-app.title = "Market Analysis Agent with GPT"
+server = dash.Dash(__name__)
+app = server.server # Expose the underlying Flask server for Gunicorn/compatibility
+server.title = "Market Analysis Agent with GPT"
 
 # === RSI CALCULATION ===
 def compute_rsi(series, period=14):
@@ -39,6 +48,8 @@ def compute_rsi(series, period=14):
     avg_gain = gain.rolling(window=period).mean()
     avg_loss = loss.rolling(window=period).mean()
     rs = avg_gain / avg_loss
+    # Handle division by zero for initial periods gracefully
+    rs = rs.replace([float('inf'), float('-inf')], 0)
     rsi = 100 - (100 / (1 + rs))
     return rsi.iloc[-1]
 
@@ -47,6 +58,12 @@ def fetch_stock_data(ticker):
     url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={ticker}&apikey={ALPHA_VANTAGE_KEY}"
     res = requests.get(url)
     data = res.json()
+    
+    # Check for API limit error gracefully
+    if "Error Message" in data or "Note" in data:
+        print("Alpha Vantage API error:", data.get("Error Message") or data.get("Note"))
+        return pd.DataFrame(), {'price': 'N/A', 'ma20': 'N/A', 'rsi': 'N/A', 'volume': 'N/A'}
+
     try:
         ts = data["Time Series (Daily)"]
         df = pd.DataFrame.from_dict(ts, orient="index").astype(float)
@@ -66,7 +83,7 @@ def fetch_stock_data(ticker):
             'volume': volume
         }
     except Exception as e:
-        print("Stock data error:", e)
+        print("Stock data processing error:", e)
         return pd.DataFrame(), {'price': 'N/A', 'ma20': 'N/A', 'rsi': 'N/A', 'volume': 'N/A'}
 
 # === FETCH NEWS HEADLINES ===
@@ -79,15 +96,20 @@ def fetch_news(ticker):
 
     try:
         res = requests.get(url)
+        # Check for NewsAPI errors
+        if res.json().get("status") == "error":
+            print("NewsAPI error:", res.json().get("message"))
+            return ["NewsAPI Error: Check API Key or limits."]
+
         articles = res.json().get("articles", [])
 
-        headlines = [a["title"] for a in articles if "title" in a]
+        headlines = [a["title"] for a in articles if "title" in a and a["title"] != "[Removed]"]
         print(f"🔍 Top headlines for {company}: {headlines}")
 
         return headlines if headlines else ["No headlines found"]
     except Exception as e:
         print("News fetch error:", e)
-        return ["No headlines found"]
+        return ["No headlines found due to connection error."]
 
     
 # === GPT SUMMARY ===
@@ -98,22 +120,22 @@ def summarize_news_with_gpt(headlines, ticker):
     try:
         prompt = f"Summarize these stock-related headlines about {ticker}:\n" + "\n".join(headlines)
         response = client.chat.completions.create(
-            model="gpt-2.5",
-            messages=[
-                {"role": "system", "content": "You are a financial analyst summarizing stock news."},
-                {"role": "user", "content": prompt}
-            ],
+            # Switched to a more capable, recent model (e.g., gpt-3.5-turbo)
+            model="gpt-3.5-turbo-instruct",
+            prompt=prompt,
             max_tokens=150
         )
-        return response.choices[0].message.content
+        return response.choices[0].text.strip()
     except Exception as e:
         print("GPT summary error:", e)
+        # Better message if API key is wrong
+        if "Authentication" in str(e):
+             return "Unable to summarize news. Check OpenAI API Key."
         return "Unable to summarize news."
 
 
-
 # === DASH LAYOUT ===
-app.layout = html.Div([
+server.layout = html.Div([
     html.H1("📈 Market Analysis Dashboard with GPT", style={'textAlign': 'center'}),
     html.Div([
         dcc.Dropdown(
@@ -132,7 +154,7 @@ app.layout = html.Div([
 ])
 
 # === CALLBACK ===
-@app.callback(
+@server.callback( # Changed 'app.callback' to 'server.callback'
     [Output('candlestick-chart', 'figure'),
      Output('stock-data', 'children'),
      Output('news-data', 'children'),
@@ -179,4 +201,4 @@ def update_dashboard(ticker):
 
 # === RUN ===
 if __name__ == '__main__':
-    app.run_server(debug=True)
+    server.run_server(debug=True)
